@@ -1,0 +1,27 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'auto-remediation-webhook'
+
+receivers:
+  - name: 'auto-remediation-webhook'
+    webhook_configs:
+      - url: 'http://truhauto.aws.ocho.ninja/webhook/callMattermost'
+        send_resolved: true
+        max_alerts: 0  # Send all alerts
+        http_config:
+          tls_config:
+            insecure_skip_verify: true  # For self-signed certificates if needed
+
+inhibit_rules:
+  # Inhibit CriticalMongoDBDiskUsage when HighMongoDBDiskUsage is firing
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname']

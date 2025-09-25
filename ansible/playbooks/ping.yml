@@ -1,0 +1,22 @@
+---
+- name: Test connectivity to all hosts
+  hosts: frontend_servers,backend_servers
+  gather_facts: false
+  tasks:
+    - name: Ping test
+      ping:
+      register: ping_result
+
+    - name: Display ping results
+      debug:
+        msg: "Ping successful for {{ inventory_hostname }} ({{ ansible_host }})"
+      when: ping_result.ping == "pong"
+
+    - name: Display host information
+      debug:
+        msg: |
+          Host: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+          Role: {{ role | default('unknown') }}
+          Environment: {{ environment | default('unknown') }}
+          Instance ID: {{ instance_id | default('N/A') }} 

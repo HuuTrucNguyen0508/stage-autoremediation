@@ -1,0 +1,23 @@
+{
+  "name": "notification-api",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.7.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.40.0",
+    "@opentelemetry/exporter-jaeger": "^1.22.0",
+    "@opentelemetry/propagator-b3": "^1.22.0",
+    "@opentelemetry/resources": "^1.22.0",
+    "@opentelemetry/sdk-node": "^0.48.0",
+    "@opentelemetry/semantic-conventions": "^1.22.0",
+    "axios": "^1.9.0",
+    "body-parser": "^1.20.2",
+    "express": "^4.19.2",
+    "pino": "^9.7.0",
+    "pino-http": "^10.5.0",
+    "prom-client": "^15.1.3"
+  }
+}

@@ -1,0 +1,254 @@
+---
+- name: Install Automation Runner Dependencies on Ubuntu
+  hosts: automation_servers
+  become: true
+  gather_facts: yes
+
+  vars:
+    terraform_version: "1.7.0"
+    nodejs_version: "20"
+    ansible_version: "latest"
+    automation_dir: "/opt/automation"
+    webhook_port: "9000"
+    pem_file: ~/Documents/truh-autoremed2.pem
+    remote_pem_path: /home/ubuntu/truh-autoremed2.pem
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade system packages
+      apt:
+        upgrade: yes
+        autoremove: yes
+
+    - name: Install required system packages
+      apt:
+        name:
+          - git
+          - wget
+          - unzip
+          - python3
+          - python3-pip
+          - curl
+          - gpg
+          - software-properties-common
+          - ca-certificates
+          - awscli
+        state: present
+
+    - name: Check if Node.js is already installed
+      command: node --version
+      register: node_check
+      failed_when: false
+      changed_when: false
+
+    - name: Force Node.js upgrade to v20
+      set_fact:
+        force_node_upgrade: true
+
+    - name: Install Node.js from NodeSource repository
+      block:
+        - name: Remove existing Node.js installation
+          file:
+            path: "/usr/local/bin/{{ item }}"
+            state: absent
+          loop:
+            - node
+            - npm
+
+        - name: Add NodeSource repository for Node.js 20.x
+          shell: |
+            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          args:
+            creates: /etc/apt/sources.list.d/nodesource.list
+
+        - name: Install Node.js and npm
+          apt:
+            name:
+              - nodejs
+            state: present
+            update_cache: yes
+
+        - name: Verify Node.js installation
+          command: node --version
+          register: node_version_check
+          changed_when: false
+
+        - name: Verify npm installation
+          command: npm --version
+          register: npm_version_check
+          changed_when: false
+      when: node_check.rc != 0 or force_node_upgrade | default(false)
+
+    - name: Verify Node.js installation
+      command: node --version
+      register: node_version
+      changed_when: false
+
+    - name: Display Node.js version
+      debug:
+        msg: "Node.js version: {{ node_version.stdout }}"
+
+    - name: Install npm dependencies globally
+      command: npm install -g npm@10
+      register: npm_update_result
+      changed_when: npm_update_result.rc == 0
+
+    - name: Display npm version
+      command: npm --version
+      register: npm_version
+      changed_when: false
+      when: npm_update_result.rc == 0
+
+    - name: Show npm version info
+      debug:
+        msg: "npm version: {{ npm_version.stdout }}"
+      when: npm_version is defined
+
+    - name: Install Terraform
+      block:
+        - name: Download Terraform
+          get_url:
+            url: "https://releases.hashicorp.com/terraform/{{ terraform_version }}/terraform_{{ terraform_version }}_linux_amd64.zip"
+            dest: "/tmp/terraform_{{ terraform_version }}_linux_amd64.zip"
+            mode: "0644"
+
+        - name: Unzip Terraform
+          unarchive:
+            src: "/tmp/terraform_{{ terraform_version }}_linux_amd64.zip"
+            dest: "/usr/local/bin/"
+            remote_src: yes
+            creates: "/usr/local/bin/terraform"
+
+        - name: Set Terraform permissions
+          file:
+            path: /usr/local/bin/terraform
+            mode: "0755"
+
+    - name: Verify Terraform installation
+      command: /usr/local/bin/terraform --version
+      register: terraform_version_output
+      changed_when: false
+
+    - name: Display Terraform version
+      debug:
+        msg: "{{ terraform_version_output.stdout_lines[0] }}"
+
+    - name: Install Ansible
+      pip:
+        name: "ansible==4.10.0"
+        state: present
+
+    - name: Verify Ansible installation
+      command: /usr/local/bin/ansible --version
+      register: ansible_version_output
+      changed_when: false
+
+    - name: Display Ansible version
+      debug:
+        msg: "{{ ansible_version_output.stdout_lines[0] }}"
+
+    - name: Install Ansible collections with retry and fallback
+      block:
+        - name: Try to install community.general collection
+          command: ansible-galaxy collection install community.general
+          register: collection_install_result
+          failed_when: false
+          changed_when: collection_install_result.rc == 0
+
+        - name: Retry collection installation if first attempt failed
+          command: ansible-galaxy collection install community.general --force
+          register: collection_retry_result
+          failed_when: false
+          changed_when: collection_retry_result.rc == 0
+          when: collection_install_result.rc != 0
+
+        - name: Check if collection installation succeeded
+          stat:
+            path: /usr/local/lib/python3.10/site-packages/ansible_collections/community/general
+          register: collection_check
+
+        - name: Display collection installation status
+          debug:
+            msg: "Ansible collection installation: {{ 'SUCCESS' if collection_check.stat.exists else 'FAILED - will retry later' }}"
+
+    - name: Create automation directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+      loop:
+        - /opt/automation
+        - /opt/automation/terraform
+        - /opt/automation/ansible
+        - /opt/automation/auto-remediation
+        - /var/log/automation
+
+    - name: Install webhook package
+      apt:
+        name: webhook
+        state: present
+        update_cache: yes
+
+    - name: Verify webhook installation
+      command: webhook --version
+      register: webhook_version_result
+      changed_when: false
+
+    - name: Set up SSH directory for backend access
+      file:
+        path: /home/ubuntu/.ssh
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0700"
+
+    - name: Install project npm dependencies (if package.json exists)
+      command: npm install
+      args:
+        chdir: "{{ automation_dir }}/auto-remediation"
+      register: npm_install_result
+      failed_when: false
+      changed_when: npm_install_result.rc == 0
+      when: automation_dir is defined
+
+    - name: Display npm dependencies installation status
+      debug:
+        msg: "npm dependencies installation: {{ 'SUCCESS' if npm_install_result.rc == 0 else 'SKIPPED (package.json not found or already installed)' }}"
+      when: npm_install_result is defined
+
+    - name: Copy PEM file to private2-ec2
+      ansible.builtin.copy:
+        src: "{{ pem_file }}"
+        dest: "{{ remote_pem_path }}"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    - name: Ensure file has correct permissions
+      ansible.builtin.file:
+        path: "{{ remote_pem_path }}"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    - name: Display installation summary
+      debug:
+        msg: |
+          Automation runner dependencies installed successfully!
+
+          - Node.js: {{ node_version.stdout }}
+          - Terraform: {{ terraform_version_output.stdout_lines[0] }}
+          - Ansible: {{ ansible_version_output.stdout_lines[0] }}
+
+          Directories created:
+          - /opt/automation
+          - /var/log/automation
+
+          Next steps:
+          1. Deploy automation files

@@ -1,0 +1,56 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki # Base directory for Loki data (index, chunks if not overridden)
+  storage:
+    filesystem: # This configures the 'filesystem' object store used by boltdb-shipper
+      chunks_directory: /loki/chunks # Where chunks are stored
+      rules_directory: /loki/rules   # For alerting/recording rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory # For single node Loki
+
+query_range:
+  align_queries_with_step: true
+
+schema_config:
+  configs:
+    - from: 2022-01-01 # Use a more recent start date for new setups
+      store: boltdb-shipper # Tells Loki to use boltdb for the index and ship chunks
+      object_store: filesystem # Chunks will be stored on the local filesystem (using paths from common.storage.filesystem)
+      schema: v12 # Recommended for Loki 2.x+
+      index:
+        prefix: index_ # Prefix for index table names
+        period: 24h    # How often to create a new index table
+
+# Optional: For compaction of index and chunks (good for boltdb-shipper)
+compactor:
+  working_directory: /loki/compactor # Directory for compactor temporary files
+  shared_store: filesystem           # Must match the object_store in schema_config
+  compaction_interval: 10m           # How often to run compaction
+  retention_enabled: true            # Enable deletion of old data by the compactor
+  retention_delete_delay: 2h         # How long to wait before deleting marked blocks
+  retention_delete_worker_count: 150
+
+# Optional: Limits for better resource management
+limits_config:
+  # retention_period: 30d # Example: Retain logs for 30 days (compactor must have retention_enabled: true)
+  enforce_metric_name: false
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h # 7 days
+  # You can add more limits as needed
+
+# Optional: Ingester config
+# ingester:
+#   wal:
+#     enabled: true
+#     dir: /loki/wal # Write Ahead Log for ingesters (helps prevent data loss on crash)
+#   chunk_idle_period: 1h # How long to wait for a chunk to be flushed if it's not full
+#   chunk_target_size: 1536000 # 1.5MB target chunk size
+#   max_chunk_age: 1h # Max age of a chunk before it's flushed

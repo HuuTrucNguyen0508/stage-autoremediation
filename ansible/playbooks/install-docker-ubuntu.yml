@@ -1,0 +1,192 @@
+---
+- name: Install Docker and Docker Compose v2 on Ubuntu
+  hosts: frontend_servers,backend_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    docker_compose_version: "v2.27.0"
+    docker_compose_arch: "linux-x86_64"
+    repo_path: "/home/ubuntu/repo"
+
+  tasks:
+    - name: Display host information
+      debug:
+        msg: |
+          Installing Docker on {{ inventory_hostname }} ({{ ansible_distribution }} {{ ansible_distribution_version }})
+          Role: {{ role | default('unknown') }}
+          IP: {{ ansible_host }}
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade system packages
+      apt:
+        upgrade: yes
+        autoremove: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - git
+          - curl
+          - wget
+          - tar
+          - xz-utils
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - apt-transport-https
+          - python3-pip
+        state: present
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    - name: Update apt cache after adding Docker repo
+      apt:
+        update_cache: yes
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      register: docker_service_result
+
+    - name: Install Docker Python SDK
+      pip:
+        name: docker
+        state: present
+      register: docker_python_sdk_result
+
+    - name: Create docker group
+      group:
+        name: docker
+        state: present
+      register: docker_group_result
+
+    - name: Add ubuntu user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+      register: user_group_result
+
+    - name: Create Docker Compose v2 directory
+      file:
+        path: /usr/local/lib/docker/cli-plugins
+        state: directory
+        mode: "0755"
+        owner: root
+        group: root
+      register: compose_dir_result
+
+    - name: Download Docker Compose v2
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/{{ docker_compose_version }}/docker-compose-{{ docker_compose_arch }}"
+        dest: /usr/local/lib/docker/cli-plugins/docker-compose
+        mode: "0755"
+        owner: root
+        group: root
+      register: compose_download_result
+
+    - name: Create repo directory
+      file:
+        path: "{{ repo_path }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+      register: repo_dir_result
+
+    - name: Set proper permissions for ubuntu user home
+      file:
+        path: /home/ubuntu
+        owner: ubuntu
+        group: ubuntu
+        recurse: yes
+      register: home_permissions_result
+
+    - name: Set proper permissions on Docker socket
+      file:
+        path: /var/run/docker.sock
+        owner: root
+        group: docker
+        mode: "0666"
+      register: socket_permissions_result
+
+    - name: Restart Docker service to apply socket permissions
+      systemd:
+        name: docker
+        state: restarted
+      register: docker_restart_result
+
+    - name: Verify Docker installation
+      command: docker --version
+      register: docker_version_result
+      changed_when: false
+
+    - name: Verify Docker Compose installation
+      command: docker compose version
+      register: compose_version_result
+      changed_when: false
+
+    - name: Test Docker functionality
+      command: docker run hello-world
+      register: docker_test_result
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Test Docker as ubuntu user (via su)
+      shell: su - ubuntu -c 'docker ps'
+      register: docker_ubuntuuser_test_result
+      changed_when: false
+
+    - name: Display installation results
+      debug:
+        msg: |
+          === Installation Summary for {{ inventory_hostname }} ===
+          Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Docker Version: {{ docker_version_result.stdout }}
+          Docker Compose Version: {{ compose_version_result.stdout }}
+          Docker Test: {{ 'SUCCESS' if docker_test_result.rc == 0 else 'FAILED' }}
+          Docker as ubuntu user: {{ 'SUCCESS' if docker_ubuntuuser_test_result.rc == 0 else 'FAILED' }}
+          Repo Directory: {{ repo_path }}
+          User Groups: {{ user_group_result.groups }}
+          Socket Permissions: {{ 'SET' if socket_permissions_result.changed else 'ALREADY SET' }}
+
+    - name: Display next steps
+      debug:
+        msg: |
+          === Next Steps ===
+          ✅ Docker installation complete!
+
+          To use Docker without sudo:
+          1. Run: newgrp docker
+          2. Test: docker ps (should work without sudo)
+
+          Or log out and log back in for permanent effect.
+
+          Ready to clone your repository to {{ repo_path }}

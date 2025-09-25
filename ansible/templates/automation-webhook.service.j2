@@ -1,0 +1,15 @@
+[Unit]
+Description=Automation Webhook Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory={{ automation_dir }}/auto-remediation
+ExecStart=/usr/bin/webhook -hooks {{ automation_dir }}/auto-remediation/hooks.yaml -verbose -port {{ webhook_port }}
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target 

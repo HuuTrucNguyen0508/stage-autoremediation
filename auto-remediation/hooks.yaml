@@ -1,0 +1,74 @@
+- id: callMattermost
+  execute-command: "/opt/automation/auto-remediation/request-ebs-increase.sh"
+  command-working-directory: "/opt/automation/auto-remediation"
+  pass-arguments-to-command:
+    - source: payload
+      name: text
+    - source: payload
+      name: user_name
+    - source: payload
+      name: channel_name
+    - source: payload
+      name: timestamp
+
+- id: proceed-to-increase
+  execute-command: "/opt/automation/auto-remediation/approve-ebs-increase.sh"
+  command-working-directory: "/opt/automation/auto-remediation"
+  pass-arguments-to-command:
+    - source: payload
+      name: text
+    - source: payload
+      name: user_name
+    - source: payload
+      name: channel_name
+    - source: payload
+      name: timestamp
+  pass-environment-to-command:
+    - source: string
+      name: WEBHOOK_TOKEN
+      envname: "ugyrjsq8ufn1xq7w1g359nbauo"
+  trigger-rule:
+    match:
+      type: value
+      value: "ugyrjsq8ufn1xq7w1g359nbauo"
+      parameter:
+        source: payload
+        name: token
+
+- id: deny-the-increase
+  execute-command: "/opt/automation/auto-remediation/deny-ebs-increase.sh"
+  command-working-directory: "/opt/automation/auto-remediation"
+  pass-arguments-to-command:
+    - source: payload
+      name: text
+    - source: payload
+      name: user_name
+    - source: payload
+      name: channel_name
+    - source: payload
+      name: timestamp
+  pass-environment-to-command:
+    - source: string
+      name: WEBHOOK_TOKEN
+      envname: "jyxbrt95dbrwxft1z3pf6633nc"
+  trigger-rule:
+    match:
+      type: value
+      value: "jyxbrt95dbrwxft1z3pf6633nc"
+      parameter:
+        source: payload
+        name: token
+
+- id: health
+  execute-command: "/bin/echo"
+  command-working-directory: "/tmp"
+  pass-arguments-to-command:
+    - source: string
+      name: "OK"
+  http-methods:
+    - GET
+  response-message: "OK"
+  response-headers:
+    - name: "Content-Type"
+      value: "text/plain"
+

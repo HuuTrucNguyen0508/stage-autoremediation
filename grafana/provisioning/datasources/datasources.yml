@@ -1,0 +1,34 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: trace_id # Field name in exemplar data
+          datasourceUid: 'jaeger' # UID of your Jaeger datasource
+          # If Jaeger UID is auto-generated, find it in Grafana UI & update here
+          # Or define a UID for Jaeger datasource below
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      derivedFields:
+        - datasourceUid: 'jaeger' # UID of your Jaeger datasource
+          matcherRegex: '"trace_id":"([^"]+)"' # For JSON logs with "trace_id":"value"
+          # If your trace_id is not in quotes, or not JSON, adjust regex:
+          # e.g., for `trace_id=xxx`: matcherRegex: 'trace_id=(\\w+)'
+          name: 'TraceID'
+          url: 'http://jaeger:16686/trace/${__value.raw}'
+    uid: loki # Explicit UID for Loki
+
+  - name: Jaeger # Add Jaeger as a datasource
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    uid: jaeger # Explicit UID for Jaeger

@@ -1,0 +1,296 @@
+---
+- name: Deploy Automation Runner on Ubuntu
+  hosts: automation_servers
+  become: true
+  gather_facts: yes
+
+  vars:
+    automation_dir: "/opt/automation"
+    webhook_port: "9000"
+    # GitLab repository configuration
+    gitlab_repo: "https://gitlab.octo.tools/tous-les-octos/cloud/stages/stage-autoremediation-dans-le-cloud-2025-v2.git"
+    gitlab_branch: "Initial_size"
+    gitlab_username: "{{ lookup('env', 'GITLAB_USERNAME') | default('YOUR_GITLAB_USERNAME') }}"
+    gitlab_token: "{{ lookup('env', 'GITLAB_TOKEN') | default('YOUR_GITLAB_TOKEN') }}"
+    # EBS volume configuration - will be populated from AWS tags
+    ebs_volume_name_tag: "truh1-mongodb-data-volume"
+
+  tasks:
+    - name: Determine backend SSH key source from environment
+      set_fact:
+        backend_ssh_key_src: "{{ lookup('env', 'AUTOMATION_BACKEND_SSH_KEY') | default('', true) }}"
+
+    - name: Check if backend SSH key exists on control node
+      stat:
+        path: "{{ backend_ssh_key_src }}"
+      register: backend_ssh_key_stat
+      delegate_to: localhost
+      run_once: true
+      when: backend_ssh_key_src | length > 0
+
+    - name: Copy SSH key for backend access (if provided)
+      copy:
+        src: "{{ backend_ssh_key_src }}"
+        dest: "/home/ubuntu/.ssh/truh-autoremed2.pem"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+      when:
+        - backend_ssh_key_src | length > 0
+        - backend_ssh_key_stat.stat.exists | default(false)
+
+    - name: Skip SSH key copy; no key provided or file not found
+      debug:
+        msg: "Skipping SSH key copy because AUTOMATION_BACKEND_SSH_KEY not set or file missing."
+      when: backend_ssh_key_src | length == 0 or not backend_ssh_key_stat.stat.exists | default(false)
+
+    - name: Create automation directory
+      file:
+        path: "{{ automation_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Compute GitLab repository URL with token (if provided)
+      set_fact:
+        git_repo_url_effective: "{{ gitlab_repo | regex_replace('^https://', 'https://oauth2:' + gitlab_token + '@') }}"
+      when:
+        - gitlab_token is defined
+        - gitlab_token is not match('^YOUR_GITLAB_TOKEN$')
+      no_log: true
+
+    - name: Check if destination is already a git repository
+      stat:
+        path: "{{ automation_dir }}/.git"
+      register: automation_git_dir
+
+    - name: Remove non-git contents of automation directory before clone
+      file:
+        path: "{{ automation_dir }}"
+        state: absent
+      when: not automation_git_dir.stat.exists
+
+    - name: Recreate automation directory
+      file:
+        path: "{{ automation_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+      when: not automation_git_dir.stat.exists
+
+    - name: Clone project from GitLab
+      git:
+        repo: "{{ git_repo_url_effective | default(gitlab_repo) }}"
+        dest: "{{ automation_dir }}"
+        version: "{{ gitlab_branch }}"
+        update: yes
+        force: yes
+        single_branch: yes
+        accept_hostkey: yes
+      become: false
+      become_user: ubuntu
+      register: git_clone_result
+      no_log: "{{ git_repo_url_effective is defined }}"
+
+    - name: Verify Terraform configuration files are present after clone
+      find:
+        paths: "{{ automation_dir }}/terraform"
+        patterns: "*.tf"
+        file_type: file
+      register: tf_files
+
+    - name: Fail if Terraform configuration files are missing
+      fail:
+        msg: "Terraform directory {{ automation_dir }}/terraform has no .tf files. The repository may not have cloned correctly."
+      when: tf_files.matched | default(0) | int == 0
+
+    - name: Initialize Terraform backend (S3) on automation host
+      shell: |
+        /usr/local/bin/terraform init -reconfigure
+      args:
+        chdir: "{{ automation_dir }}/terraform"
+      environment:
+        AWS_REGION: "{{ aws_region | default('us-east-1') }}"
+      become: false
+      become_user: ubuntu
+
+    - name: Pull Terraform remote state for verification (non-destructive)
+      shell: |
+        /usr/local/bin/terraform state pull > terraform.tfstate.remote
+      args:
+        chdir: "{{ automation_dir }}/terraform"
+      environment:
+        AWS_REGION: "{{ aws_region | default('us-east-1') }}"
+      register: tf_state_pull
+      changed_when: false
+      become: false
+      become_user: ubuntu
+
+    - name: Display Terraform remote state snapshot status
+      debug:
+        msg: |
+          Remote state snapshot saved to: {{ automation_dir }}/terraform/terraform.tfstate.remote
+          Backend region: {{ aws_region | default('us-east-1') }}
+
+    - name: Ensure AWS CLI config directory exists for ubuntu
+      file:
+        path: "/home/ubuntu/.aws"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0700"
+
+    - name: Check if AWS credentials already exist on remote
+      stat:
+        path: "/home/ubuntu/.aws/credentials"
+      register: aws_credentials_file
+
+    - name: Configure AWS CLI credentials for ubuntu user
+      template:
+        src: "{{ playbook_dir }}/../templates/aws-credentials.j2"
+        dest: "/home/ubuntu/.aws/credentials"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+      when:
+        - not aws_credentials_file.stat.exists
+        - aws_access_key_id is defined
+        - aws_secret_access_key is defined
+
+    - name: Skip writing credentials and use existing file or instance role
+      debug:
+        msg: "Skipping credentials template: existing credentials detected or variables not provided; relying on existing ~/.aws/credentials or IAM role."
+      when:
+        - aws_credentials_file.stat.exists or (aws_access_key_id is not defined or aws_secret_access_key is not defined)
+
+    - name: Configure AWS CLI config for ubuntu user
+      template:
+        src: "{{ playbook_dir }}/../templates/aws-config.j2"
+        dest: "/home/ubuntu/.aws/config"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    - name: Verify AWS CLI configuration (caller identity)
+      shell: aws sts get-caller-identity --output json
+      become: false
+      become_user: ubuntu
+      register: aws_identity
+      failed_when: false
+      changed_when: false
+
+    - name: Display AWS CLI verification output
+      debug:
+        msg: |
+          AWS CLI configured for region: {{ aws_region | default('unset') }}
+          Caller identity: {{ aws_identity.stdout | default('unavailable') }}
+
+    - name: Set proper permissions on automation directory
+      file:
+        path: "{{ automation_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        recurse: yes
+        mode: "0755"
+
+    - name: Store GitLab credentials for future git operations
+      shell: |
+        echo "https://{{ gitlab_username }}:{{ gitlab_token }}@gitlab.octo.tools" > /home/ubuntu/.git-credentials
+        chown ubuntu:ubuntu /home/ubuntu/.git-credentials
+        chmod 600 /home/ubuntu/.git-credentials
+      when:
+        - gitlab_token is defined
+        - gitlab_token is not match('^YOUR_GITLAB_TOKEN$')
+        - gitlab_username is defined
+        - gitlab_username is not match('^YOUR_GITLAB_USERNAME$')
+      no_log: true
+      become: false
+      become_user: ubuntu
+
+    - name: Configure git user for automation operations
+      shell: |
+        cd {{ automation_dir }}
+        git config user.name "Auto-Remediation Bot"
+        git config user.email "auto-remediation@truh1.local"
+        git config credential.helper store
+      become: false
+      become_user: ubuntu
+
+    - name: Create log directory
+      file:
+        path: "/var/log/automation"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Set proper permissions on log directory
+      file:
+        path: "/var/log/automation"
+        owner: ubuntu
+        group: ubuntu
+        recurse: yes
+        mode: "0755"
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          === Automation Runner Deployment Summary ===
+          Automation directory: {{ automation_dir }}
+          Log directory: /var/log/automation
+          Webhook port: {{ webhook_port }}
+          GitLab repository: {{ gitlab_repo }}
+          Branch: {{ gitlab_branch }}
+
+          Project cloned from GitLab with:
+          - Automation webhook server
+          - Storage expansion playbook
+          - Trigger script
+          - Terraform configuration
+          - Ansible configuration
+
+          Note: Dependencies (Git, Node.js, npm) are installed separately
+          via the install-automation-dependencies playbook.
+
+          Next steps:
+          1. Start the webhook service
+          2. Test automation functionality
+          3. Verify SSH access to backend
+
+    - name: Ensure webhook package is installed
+      apt:
+        name: webhook
+        state: present
+        update_cache: yes
+
+    - name: Install automation webhook systemd service
+      template:
+        src: "{{ playbook_dir }}/../templates/automation-webhook.service.j2"
+        dest: "/etc/systemd/system/automation-webhook.service"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload systemd to pick up new service
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start automation webhook service
+      systemd:
+        name: automation-webhook
+        enabled: yes
+        state: restarted
+
+    - name: Wait for webhook to listen on port {{ webhook_port }}
+      wait_for:
+        host: 127.0.0.1
+        port: "{{ webhook_port | int }}"
+        timeout: 30
+      register: webhook_wait
+      failed_when: false
+
+    - name: Display webhook service status
+      debug:
+        msg: "Webhook service listening on port {{ webhook_port }}: {{ (webhook_wait is defined) and (webhook_wait.state | default('unknown')) }}"

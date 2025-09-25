@@ -1,0 +1,102 @@
+---
+- name: Extend backend filesystem after EBS resize
+  hosts: backend_servers
+  gather_facts: false
+  become: true
+  vars:
+    mongodb_mount_point: /data/mongodb
+    ansible_user: ubuntu
+    ansible_port: 22
+    ansible_ssh_private_key_file: /home/ubuntu/truh-autoremed2.pem
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+  tasks:
+    - name: Install required packages (cloud-guest-utils, xfsprogs, e2fsprogs)
+      apt:
+        name:
+          - cloud-guest-utils
+          - xfsprogs
+          - e2fsprogs
+        state: present
+        update_cache: true
+
+    - name: Grow partition if present
+      shell: |
+        DEV=$(findmnt -n -o SOURCE --target {{ mongodb_mount_point }});
+        P=$(lsblk -no PARTN "$DEV");
+        if [ -n "$P" ]; then BASE=/dev/$(lsblk -no PKNAME "$DEV"); growpart "$BASE" "$P" && partprobe "$BASE"; fi
+      register: growpart_cmd_result
+      changed_when: false
+      failed_when: false
+
+    - name: Grow filesystem online (ext4/xfs)
+      shell: |
+        FSTYPE=$(findmnt -n -o FSTYPE --target {{ mongodb_mount_point }});
+        DEV=$(findmnt -n -o SOURCE --target {{ mongodb_mount_point }});
+        if [ "$FSTYPE" = xfs ]; then xfs_growfs {{ mongodb_mount_point }}; else resize2fs "$DEV"; fi
+      register: growfs_cmd_result
+      changed_when: false
+      failed_when: false
+
+    - name: Verify filesystem size on backend
+      command: df -h {{ mongodb_mount_point }}
+      register: df_result
+      changed_when: false
+
+    - name: Expose filesystem size to subsequent plays
+      set_stats:
+        data:
+          backend_df_stdout_lines: "{{ df_result.stdout_lines }}"
+
+    - name: Commit updated Terraform configuration
+      block:
+        - name: Verify git credentials are available
+          stat:
+            path: /home/ubuntu/.git-credentials
+          delegate_to: localhost
+          run_once: true
+          register: git_credentials_check
+
+        - name: Check if automation directory is a git repository
+          stat:
+            path: /opt/automation/.git
+          delegate_to: localhost
+          run_once: true
+          register: git_repo_check
+
+        - name: Create and checkout update-ebs_size branch
+          shell: |
+            cd /opt/automation
+            git checkout -b update-ebs_size || git checkout update-ebs_size
+          delegate_to: localhost
+          run_once: true
+          when: git_repo_check.stat.exists
+
+        - name: Stage mongodb_size.auto.tfvars for commit
+          shell: |
+            cd /opt/automation
+            git add terraform/mongodb_size.auto.tfvars.json
+          delegate_to: localhost
+          run_once: true
+          when: git_repo_check.stat.exists
+
+        - name: Commit Terraform configuration changes
+          shell: |
+            cd /opt/automation
+            git commit -m "Update mongodb_size.auto.tfvars - EBS volume increase completed"
+          delegate_to: localhost
+          run_once: true
+          when: git_repo_check.stat.exists
+
+        - name: Push changes to update-ebs_size branch
+          shell: |
+            cd /opt/automation
+            git push origin update-ebs_size
+          delegate_to: localhost
+          run_once: true
+          when: git_repo_check.stat.exists
+
+      rescue:
+        - name: Log git operation failure
+          debug:
+            msg: "WARNING: Failed to commit/push Terraform configuration changes"
+          run_once: true

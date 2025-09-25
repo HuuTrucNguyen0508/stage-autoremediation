@@ -1,0 +1,32 @@
+FROM prom/alertmanager:v0.28.0
+
+# Switch to root to manage files and permissions
+USER root
+
+# Create required directories
+# Copy the alertmanager configuration template
+COPY alertmanager.yml.template /etc/alertmanager/alertmanager.yml.template
+
+# Set correct permissions for the template file
+RUN chown nobody:nobody /etc/alertmanager/alertmanager.yml.template && \
+    chmod 644 /etc/alertmanager/alertmanager.yml.template
+
+# Produce final config at build time (no envsubst needed)
+RUN cp /etc/alertmanager/alertmanager.yml.template /etc/alertmanager/alertmanager.yml
+
+# Create data directory with permissions for the nobody user (UID 65534)
+RUN mkdir -p /alertmanager && \
+    chown -R nobody:nobody /alertmanager && \
+    chmod -R 755 /alertmanager
+
+# Switch back to nobody user
+USER nobody
+
+# Expose port 9093
+EXPOSE 9093
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:9093/-/ready || exit 1
+
+

@@ -1,0 +1,10 @@
+FROM prom/node-exporter:v1.7.0
+
+# Ensure the container runs with bridge networking
+# The base image might have host networking by default, so we override it
+
+# Expose the metrics port
+EXPOSE 9100
+
+# Set the default command with explicit listen address
+CMD ["--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs", "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)", "--web.listen-address=:9100"] 

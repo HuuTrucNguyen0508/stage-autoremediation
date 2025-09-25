@@ -1,0 +1,65 @@
+groups:
+  - name: storage_alerts
+    rules:
+      # Alert when MongoDB data volume usage exceeds 80%
+      - alert: HighMongoDBDiskUsage
+        expr: (node_filesystem_avail_bytes{mountpoint="/data/mongodb"} / node_filesystem_size_bytes{mountpoint="/data/mongodb"} * 100) < 20
+        for: 2m
+        labels:
+          severity: warning
+          auto_remediate: "true"
+        annotations:
+          summary: "High MongoDB data volume usage detected"
+          description: "MongoDB data volume usage is above 80% on {{ $labels.instance }}. Auto-remediation will be triggered."
+          value: "{{ $value }}%"
+
+      # Critical alert when MongoDB data volume usage exceeds 90%
+      - alert: CriticalMongoDBDiskUsage
+        expr: (node_filesystem_avail_bytes{mountpoint="/data/mongodb"} / node_filesystem_size_bytes{mountpoint="/data/mongodb"} * 100) < 10
+        for: 1m
+        labels:
+          severity: critical
+          auto_remediate: "true"
+        annotations:
+          summary: "Critical MongoDB data volume usage detected"
+          description: "MongoDB data volume usage is above 90% on {{ $labels.instance }}. Immediate auto-remediation required."
+          value: "{{ $value }}%"
+
+      # Alert when MongoDB data volume usage is approaching threshold (70%)
+      - alert: ApproachingMongoDBDiskLimit
+        expr: (node_filesystem_avail_bytes{mountpoint="/data/mongodb"} / node_filesystem_size_bytes{mountpoint="/data/mongodb"} * 100) < 30
+        for: 5m
+        labels:
+          severity: info
+          auto_remediate: "true"
+        annotations:
+          summary: "MongoDB data volume usage approaching limit"
+          description: "MongoDB data volume usage is above 70% on {{ $labels.instance }}. Monitor closely."
+          value: "{{ $value }}%"
+
+      # Fallback alert for root filesystem (less critical)
+      - alert: RootFilesystemHighUsage
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} * 100) < 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Root filesystem high usage detected"
+          description: "Root filesystem usage is above 80% on {{ $labels.instance }}. Consider cleanup."
+          value: "{{ $value }}%"
+
+  - name: manual_test_alerts
+    rules:
+      # Manual test alert that can be triggered on demand
+      - alert: ManualTestAlert
+        expr: manual_test_metric > 0
+        for: 0s  # Fire immediately
+        labels:
+          severity: warning
+          auto_remediate: "true"
+          test_alert: "true"
+        annotations:
+          summary: "Manual test alert triggered"
+          description: "This is a manual test alert to verify the auto-remediation system. Triggered by setting manual_test_metric > 0"
+          value: "{{ $value }}"
+          instructions: "To trigger: curl -X POST 'http://localhost:9090/api/v1/admin/tsdb/add' -d 'manual_test_metric 1'" 

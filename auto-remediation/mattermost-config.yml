@@ -1,0 +1,18 @@
+# Mattermost Configuration for Auto-Remediation
+# Copy this file to your environment or set these as environment variables
+
+# Mattermost webhook URL (required)
+# Get this from your Mattermost server: System Console > Integrations > Incoming Webhooks
+# Note: The webhook URL already contains the channel information
+mattermost_webhook_url: "https://mattermost.octo.tools/hooks/m4egxarn3trqi85zjtrg5fe1ye"
+
+# Mattermost channel (not needed - already configured in webhook URL)
+# mattermost_channel: "#your-channel-name"
+
+# Example environment variables to set:
+# export MATTERMOST_WEBHOOK_URL="https://your-mattermost-server.com/hooks/your-webhook-id"
+
+# Usage:
+# ansible-playbook auto-remediation-playbook.yml -e "mattermost_webhook_url=https://your-webhook-url"
+# OR
+# ansible-playbook auto-remediation-playbook.yml

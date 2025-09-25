@@ -1,0 +1,21 @@
+services:
+  nginx:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-nginx-frontend:latest
+    container_name: nginx-frontend
+    depends_on:
+      - frontend
+    network_mode: "service:frontend"
+    restart: always
+
+  frontend:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/projet-stage-truh-frontend:1.2.2
+    container_name: frontend-app
+    ports:
+      - "80:80"
+    networks:
+      - app-network
+    restart: always
+
+networks:
+  app-network:
+    driver: bridge

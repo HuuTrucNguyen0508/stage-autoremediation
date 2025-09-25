@@ -1,0 +1,31 @@
+FROM prom/prometheus:latest
+
+# Switch to root to set permissions
+USER root
+
+# Copy the prometheus configuration
+COPY prometheus.yml /etc/prometheus/prometheus.yml
+
+# Copy the alert rules
+COPY prometheus-alerts.yml /etc/prometheus/prometheus-alerts.yml
+
+# Set correct permissions for the config files
+RUN chown nobody:nobody /etc/prometheus/prometheus.yml && \
+  chmod 644 /etc/prometheus/prometheus.yml && \
+  chown nobody:nobody /etc/prometheus/prometheus-alerts.yml && \
+  chmod 644 /etc/prometheus/prometheus-alerts.yml
+
+# Create data directory with permissions for UID 1000 (Ubuntu user)
+RUN mkdir -p /prometheus && \
+  chown -R 1000:1000 /prometheus && \
+  chmod -R 755 /prometheus
+
+# Switch back to nobody user
+USER nobody
+
+# Expose port 9090
+EXPOSE 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1 

@@ -1,0 +1,29 @@
+{
+  "name": "database-api",
+  "version": "1.0.0",
+  "description": "API service for direct database interactions (e.g., Todos)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.7.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.40.0",
+    "@opentelemetry/exporter-jaeger": "^1.22.0",
+    "@opentelemetry/propagator-b3": "^1.22.0",
+    "@opentelemetry/resources": "^1.22.0",
+    "@opentelemetry/sdk-node": "^0.48.0",
+    "@opentelemetry/semantic-conventions": "^1.22.0",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "mongoose": "^7.0.0",
+    "pino": "^8.17.2",
+    "pino-http": "^9.0.0",
+    "prom-client": "^15.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}

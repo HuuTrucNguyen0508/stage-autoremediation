@@ -1,0 +1,242 @@
+# compose.yaml (Configuré pour utiliser les images de Docker Hub)
+# Used only for local development
+services:
+  nginx: # Nginx est maintenant le point d'entrée principal
+    image: nginx:1.25-alpine
+    container_name: nginx-proxy
+    ports:
+      - "80:80" # Point d'entrée principal de l'application
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - app-network
+    depends_on:
+      - frontend
+      - backend
+    restart: always
+
+  nginx-backend:
+    image: nginx:1.25-alpine
+    container_name: nginx-backend
+    ports:
+      - "8081:80"
+    volumes:
+      - ./dockerfiles/backend-nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - app-network
+    depends_on:
+      - backend
+    restart: always
+
+  frontend:
+    image: huutrucnguyen/projet-stage-truh-frontend:1.0 # <<< CHANGEMENT ICI
+    # La section 'build:' a été supprimée
+    # Le port n'est plus exposé à l'hôte, Nginx s'en charge.
+    container_name: frontend-app # Ajout d'un nom de conteneur pour la clarté
+    stdin_open: true
+    restart: always
+    networks:
+      - app-network
+    depends_on:
+      - backend
+
+  backend: # Votre service agissant comme backend-api
+    image: huutrucnguyen/projet-stage-truh-backend:1.3.1 # <<< CHANGEMENT ICI
+    # La section 'build:' a été supprimée
+    container_name: backend-api-app # Nom de conteneur
+    ports:
+      - "8080:8080"
+    networks:
+      - app-network
+    depends_on:
+      - database-api
+      - notification-api
+      - jaeger
+    labels:
+      - "logging=promtail"
+      - "com.docker.compose.service=backend-api"
+    environment:
+      - NODE_ENV=production # Important pour une image de production
+      - LOG_LEVEL=info
+      - PORT=8080
+      - DATABASE_API_URL=http://database-api:3002
+      - NOTIFICATION_API_URL=http://notification-api:4000
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_SERVICE_NAME=backend-api
+      - SERVICE_VERSION=1.0.0
+    restart: always
+
+  notification-api:
+    image: huutrucnguyen/projet-stage-truh-notification:1.0 # <<< CHANGEMENT ICI
+    # La section 'build:' a été supprimée
+    container_name: notification-api-app
+    ports: # On peut garder ce port pour des tests directs si besoin
+      - "4001:4000"
+    networks:
+      - app-network
+    depends_on:
+      - database-api
+      - jaeger
+    labels:
+      - "logging=promtail"
+      - "com.docker.compose.service=notification-api"
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - PORT=4000
+      - DATABASE_API_URL=http://database-api:3002
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_SERVICE_NAME=notification-api
+      - SERVICE_VERSION=1.0.0
+    restart: always
+
+  database-api:
+    image: huutrucnguyen/projet-stage-truh-database:1.0 # <<< CHANGEMENT ICI
+    # La section 'build:' a été supprimée
+    container_name: database-api-app
+    ports: # On peut garder ce port pour des tests directs
+      - "3002:3002"
+    networks:
+      - app-network
+    depends_on:
+      - mongo
+      - jaeger
+    labels:
+      - "logging=promtail"
+      - "com.docker.compose.service=database-api"
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - PORT=3002
+      - MONGODB_URI=mongodb://mongo:27017/TodoApp # <<< N'oubliez pas de remplacer par votre nom de BDD réel si différent
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_SERVICE_NAME=database-api
+      - SERVICE_VERSION=1.0.0
+    restart: always
+
+  mongo:
+    image: mongo:4.2.0
+    container_name: mongo-db
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - app-network
+    restart: always
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    networks:
+      - app-network
+    restart: always
+
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.20
+    container_name: mongodb-exporter
+    ports:
+      - "9216:9216"
+    networks:
+      - app-network
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017
+    restart: always
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger-otel
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    networks:
+      - app-network
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - app-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    restart: always
+
+  loki:
+    image: grafana/loki:2.9.2
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-custom-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/loki-custom-config.yaml
+    networks:
+      - app-network
+    restart: always
+
+  promtail:
+    image: grafana/promtail:2.9.2
+    container_name: promtail
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail-config.yml:/etc/promtail/promtail-custom-config.yml:ro
+      - promtail_positions:/tmp
+    command: -config.file=/etc/promtail/promtail-custom-config.yml
+    networks:
+      - app-network
+    depends_on:
+      - loki
+    restart: always
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./dockerfiles/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dockerfiles/grafana/provisioning/dashboard.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
+      - ./dockerfiles/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    networks:
+      - app-network
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+      - database-api
+      - backend
+      - notification-api
+    restart: always
+
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mongo_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  promtail_positions:
+

@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+.next/ # If Next.js
+.nuxt/ # If Nuxt.js
+# etc., depending on your frontend framework
+
+# Misc
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (if specific to frontend)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example

@@ -1,0 +1,225 @@
+services:
+  nginx:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-nginx-backend:latest
+    container_name: nginx-backend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    restart: always
+
+  backend:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/projet-stage-truh-backend:1.3.2
+    container_name: backend-api-app
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - PORT=8080
+      - DATABASE_API_URL=http://database-api:3002
+      - NOTIFICATION_API_URL=http://notification-api:4000
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_SERVICE_NAME=backend-api
+      - SERVICE_VERSION=1.0.0
+    depends_on:
+      - database-api
+      - notification-api
+      - jaeger
+    networks:
+      - app-network
+    restart: always
+
+  notification-api:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/projet-stage-truh-notification:1.0
+    container_name: notification-api-app
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - PORT=4000
+      - DATABASE_API_URL=http://database-api:3002
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_SERVICE_NAME=notification-api
+      - SERVICE_VERSION=1.0.0
+    depends_on:
+      - database-api
+      - jaeger
+    networks:
+      - app-network
+    restart: always
+
+  database-api:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/projet-stage-truh-database:1.0
+    container_name: database-api-app
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - PORT=3002
+      - MONGODB_URI=mongodb://admin:admin@mongo:27017/TodoApp?authSource=admin
+      - JAEGER_ENDPOINT=http://jaeger:14268/api/traces
+      - OTEL_SERVICE_NAME=database-api
+      - SERVICE_VERSION=1.0.0
+    depends_on:
+      - mongo
+      - jaeger
+    networks:
+      - app-network
+    restart: always
+
+  mongo:
+    image: mongo:6.0
+    container_name: mongo-db
+    volumes:
+      - /data/mongodb:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
+    command: ["mongod", "--bind_ip_all"]
+    networks:
+      - app-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.40.0
+    container_name: mongodb-exporter
+    ports:
+      - "9216:9216"
+    networks:
+      - app-network
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: mongodb://admin:admin@mongo:27017/admin?authSource=admin
+    command:
+      - --mongodb.uri=mongodb://admin:admin@mongo:27017/admin?authSource=admin
+      - --collect-all
+    restart: always
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    container_name: jaeger-otel
+    networks:
+      - app-network
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      - JAEGER_UI_BASE_PATH=/jaeger
+    restart: always
+
+  prometheus:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-prometheus:latest
+    container_name: prometheus
+    volumes:
+      - /data/db/prometheus:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - app-network
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+      - "--web.external-url=http://truhauto.aws.ocho.ninja/prometheus"
+      - "--web.route-prefix=/"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+
+  alertmanager:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-alertmanager:latest
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - /data/db/alertmanager:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    networks:
+      - app-network
+    restart: always
+
+  loki:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - /data/db/loki:/loki
+    command: ["-config.file=/etc/loki/loki-custom-config.yaml"]
+    networks:
+      - app-network
+    restart: always
+
+  promtail:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-promtail:latest
+    container_name: promtail
+    ports:
+      - "9080:9080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /data/db/promtail:/tmp
+    command: ["-config.file=/etc/promtail/promtail-custom-config.yml"]
+    depends_on:
+      - loki
+    networks:
+      - app-network
+    restart: always
+    healthcheck:
+      disable: true
+
+  grafana:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-grafana:latest
+    container_name: grafana
+    volumes:
+      - /data/db/grafana:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_PROVISIONING_PATH=/etc/grafana/provisioning
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:%(http_port)s/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+    networks:
+      - app-network
+    restart: always
+
+  node-exporter:
+    image: ${DOCKERHUB_USERNAME:-huutrucnguyen}/truh1-node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - app-network
+    restart: always
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    networks:
+      - app-network
+    restart: always
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes: {}

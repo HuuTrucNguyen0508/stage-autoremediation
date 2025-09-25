@@ -1,0 +1,7 @@
+# AWS Credentials for Automation Runner
+# These should be set via environment variables or vault
+aws_access_key_id: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') | default('your_access_key_id_here') }}"
+aws_secret_access_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') | default('your_secret_access_key_here') }}"
+
+# Automation instance ID (will be populated from Terraform output)
+automation_instance_id: "{{ lookup('env', 'AUTOMATION_INSTANCE_ID') | default('i-0765e43cf0a1e3f7c') }}" 

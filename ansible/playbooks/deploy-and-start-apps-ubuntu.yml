@@ -1,0 +1,309 @@
+---
+- name: Deploy and start applications on Ubuntu EC2 instances
+  collections:
+    - community.docker
+  hosts: frontend_servers,backend_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    repo_path: "/home/ubuntu/repo"
+    local_project_path: "/home/huu-truc-nguyen/test/stage-autoremediation-dans-le-cloud-2025-v2"
+    frontend_port: 80
+    backend_port: 80
+    # EBS device variables to avoid hardcoding
+    ebs_device: "/dev/sdf" # Default value, will be overridden by dynamic detection
+    ebs_mount_point: "/data/mongodb"
+
+  tasks:
+    - name: Display host information
+      debug:
+        msg: |
+          Deploying and starting applications on {{ inventory_hostname }}
+          Role: {{ role | default('unknown') }}
+          Repo path: {{ repo_path }}
+          EBS device: {{ ebs_device }}
+          Using streamlined approach with embedded configurations
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Ensure repo directory exists
+      file:
+        path: "{{ repo_path }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    # Frontend deployment block
+    - name: Frontend deployment block
+      when: role == "frontend"
+      block:
+        - name: Create frontend directory
+          file:
+            path: "{{ repo_path }}/frontend-ec2"
+            state: directory
+            owner: ubuntu
+            group: ubuntu
+            mode: "0755"
+
+        - name: Copy frontend docker-compose file
+          copy:
+            src: "{{ local_project_path }}/frontend-ec2/docker-compose.yaml"
+            dest: "{{ repo_path }}/frontend-ec2/docker-compose.yaml"
+            owner: ubuntu
+            group: ubuntu
+            mode: "0644"
+          register: frontend_copy_result
+
+        - name: Stop any existing frontend containers
+          command: docker compose down
+          args:
+            chdir: "{{ repo_path }}/frontend-ec2"
+          register: frontend_stop_result
+
+        - name: Pull latest frontend images
+          command: docker compose pull
+          args:
+            chdir: "{{ repo_path }}/frontend-ec2"
+          register: frontend_pull_result
+
+        - name: Start frontend application
+          command: docker compose up -d
+          args:
+            chdir: "{{ repo_path }}/frontend-ec2"
+          register: frontend_start_result
+
+        - name: Display frontend deployment results
+          debug:
+            msg: |
+              Frontend deployment completed on {{ inventory_hostname }}
+              Copy: {{ 'SUCCESS' if frontend_copy_result.changed else 'NO CHANGES' }}
+              Stop: {{ 'SUCCESS' if frontend_stop_result.changed else 'NO CHANGES' }}
+              Pull: {{ 'SUCCESS' if frontend_pull_result.changed else 'NO CHANGES' }}
+              Start: {{ 'SUCCESS' if frontend_start_result.changed else 'NO CHANGES' }}
+
+        # EBS Volume Setup for MongoDB - Dynamic device detection
+    - name: EBS volume mounting block
+      when: role == "backend"
+      block:
+        - name: Detect EBS volume device dynamically (excluding root volumes)
+          shell: |
+            lsblk -d -o NAME | grep -v xvda | grep -v loop | grep -v NAME | head -1 | sed 's/^/\/dev\//'
+          register: ebs_device_found
+          changed_when: false
+
+        - name: Set EBS device variable from detected device or fallback
+          set_fact:
+            ebs_device: "{{ ebs_device_found.stdout | default('/dev/sdf') }}"
+
+        - name: Display detected EBS device
+          debug:
+            msg: "EBS device detected: {{ ebs_device }}"
+
+        - name: Check if EBS device exists
+          stat:
+            path: "{{ ebs_device }}"
+          register: ebs_device_stat
+
+        - name: Fail if EBS device does not exist
+          fail:
+            msg: "EBS device {{ ebs_device }} does not exist!"
+          when: not ebs_device_stat.stat.exists
+
+        - name: Create MongoDB mount point directory
+          file:
+            path: "{{ ebs_mount_point }}"
+            state: directory
+            mode: "0755"
+            owner: 1000
+            group: 1000
+
+        - name: Check if EBS device has filesystem
+          command: blkid "{{ ebs_device }}"
+          register: filesystem_check
+          failed_when: false
+          changed_when: false
+
+        - name: Create ext4 filesystem on EBS device if missing
+          filesystem:
+            fstype: ext4
+            dev: "{{ ebs_device }}"
+          when: filesystem_check.rc != 0
+
+        - name: Check if EBS device is mounted
+          shell: mountpoint -q "{{ ebs_mount_point }}" && echo mounted || echo not_mounted
+          register: mount_check
+          changed_when: false
+
+        - name: Mount EBS device to mount point
+          mount:
+            path: "{{ ebs_mount_point }}"
+            src: "{{ ebs_device }}"
+            fstype: ext4
+            state: mounted
+            opts: defaults,nofail
+            dump: 0
+            passno: 2
+          when: mount_check.stdout == "not_mounted"
+
+        - name: Set ownership and permissions for MongoDB mount point
+          file:
+            path: "{{ ebs_mount_point }}"
+            owner: 1000
+            group: 1000
+            mode: "0755"
+            recurse: yes
+
+        - name: Create other data directories for monitoring stack
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0755"
+            owner: 1000
+            group: 1000
+          loop:
+            - "/data/mongodb/prometheus"
+            - "/data/mongodb/alertmanager"
+            - "/data/mongodb/loki"
+            - "/data/mongodb/promtail"
+            - "/data/mongodb/grafana"
+
+        - name: Create additional required subdirectories
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0755"
+            owner: 1000
+            group: 1000
+          loop:
+            - "/data/mongodb/loki/rules"
+            - "/data/mongodb/grafana/plugins"
+
+        - name: Set correct ownership for monitoring stack data directories
+          file:
+            path: "{{ item.path }}"
+            state: directory
+            recurse: yes
+            owner: "{{ item.owner }}"
+            group: "{{ item.group }}"
+            mode: "0775"
+          loop:
+            - { path: "/data/db/prometheus", owner: 65534, group: 65534 } # Prometheus
+            - { path: "/data/db/alertmanager", owner: 65534, group: 65534 } # Alertmanager
+            - { path: "/data/db/loki", owner: 10001, group: 10001 } # Loki
+            - { path: "/data/db/promtail", owner: 0, group: 0 } # Promtail
+            - { path: "/data/db/grafana", owner: 472, group: 472 } # Grafana
+
+        - name: Verify mounted filesystem
+          command: df -h "{{ ebs_mount_point }}"
+          register: mount_verification
+          changed_when: false
+
+        - name: Display EBS mount verification
+          debug:
+            msg: "{{ mount_verification.stdout }}"
+
+    - name: Backend deployment block
+      when: role == "backend"
+      block:
+        - name: Create backend directory
+          file:
+            path: "{{ repo_path }}/backend-ec2"
+            state: directory
+            owner: ubuntu
+            group: ubuntu
+            mode: "0755"
+
+        - name: Copy backend docker-compose file
+          copy:
+            src: "{{ local_project_path }}/backend-ec2/docker-compose.yaml"
+            dest: "{{ repo_path }}/backend-ec2/docker-compose.yaml"
+            owner: ubuntu
+            group: ubuntu
+            mode: "0644"
+          register: backend_copy_result
+
+        # 🔹 Get IP before running Docker Compose
+        - name: Get automation server private IP
+          set_fact:
+            automation_private_ip: "{{ hostvars[groups['automation_servers'][0]]['private_ip'] }}"
+
+        - name: Create .env file for Docker Compose
+          copy:
+            content: |
+              # Environment variables for Docker Compose
+              # Generated on {{ ansible_date_time.iso8601 }}
+              AUTOMATION_SERVER_IP={{ automation_private_ip }}
+            dest: "{{ repo_path }}/backend-ec2/.env"
+            owner: ubuntu
+            group: ubuntu
+            mode: "0644"
+          register: env_file_result
+
+        - name: Display automation IP info
+          debug:
+            msg: |
+              === Automation Server Information ===
+              IP Address: {{ automation_private_ip }}
+              Hostname: {{ hostvars[groups['automation_servers'][0]]['inventory_hostname'] }}
+              File created: {{ repo_path }}/backend-ec2/.env
+              Status: {{ 'SUCCESS' if env_file_result.changed else 'NO CHANGES' }}
+
+        - name: Stop any existing backend containers
+          command: docker compose down
+          args:
+            chdir: "{{ repo_path }}/backend-ec2"
+          register: backend_stop_result
+
+        - name: Pull latest backend images
+          command: docker compose pull
+          args:
+            chdir: "{{ repo_path }}/backend-ec2"
+          register: backend_pull_result
+
+        - name: Start backend application
+          command: docker compose up -d
+          args:
+            chdir: "{{ repo_path }}/backend-ec2"
+          register: backend_start_result
+
+        - name: Display backend deployment results
+          debug:
+            msg: |
+              Backend deployment completed on {{ inventory_hostname }}
+              Copy: {{ 'SUCCESS' if backend_copy_result.changed else 'NO CHANGES' }}
+              Stop: {{ 'SUCCESS' if backend_stop_result.changed else 'NO CHANGES' }}
+              Pull: {{ 'SUCCESS' if backend_pull_result.changed else 'NO CHANGES' }}
+              Start: {{ 'SUCCESS' if backend_start_result.changed else 'NO CHANGES' }}
+
+    # Final status check
+    - name: Check application status
+      command: docker compose ps
+      args:
+        chdir: "{{ repo_path }}/{{ 'frontend-ec2' if role == 'frontend' else 'backend-ec2' }}"
+      register: final_status_check
+      changed_when: false
+
+    - name: Display final deployment summary
+      debug:
+        msg: |
+          === Deployment Summary for {{ inventory_hostname }} ===
+          Role: {{ role }}
+          Repository: {{ repo_path }}
+          Status: {{ 'RUNNING' if final_status_check.changed else 'CHECK REQUIRED' }}
+
+          Applications deployed:
+          {% if role == 'frontend' %}
+          - Frontend web application
+          {% elif role == 'backend' %}
+          - Backend API services
+          {% endif %}
+
+          Next steps:
+          1. Verify applications are accessible
+          2. Check logs for any errors
+          3. Test functionality

@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output (if you transpile, e.g., TypeScript to JS)
+dist/
+build/
+
+# Misc
+.DS_Store
+
+# Environment files (if specific to backend)
+.env
+!.env.example

@@ -1,0 +1,243 @@
+---
+- name: Auto-remediation playbook for MongoDB volume expansion (Terraform operations only)
+  hosts: localhost
+  gather_facts: true
+  vars:
+    terraform_dir: "{{ playbook_dir }}/../terraform"
+    json_file: "{{ terraform_dir }}/mongodb_size.auto.tfvars.json"
+    increment_amount: 10
+    approval_file: "{{ playbook_dir }}/approval_status.json"
+    aws_region: "{{ lookup('env', 'AWS_REGION') | default('us-east-1', true) }}"
+    ebs_volume_name_tag: "truh1-mongodb-data-volume"
+    # Use normal Ansible timestamp
+    mattermost_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+  tasks:
+    - name: Display auto-remediation start
+      debug:
+        msg: |
+          🚀 Starting auto-remediation process (Terraform operations only)
+          📁 Terraform directory: {{ terraform_dir }}
+          📄 JSON file: {{ json_file }}
+          ➕ Increment: {{ increment_amount }}GB
+          ⏱️ Timestamp: {{ mattermost_timestamp }}
+
+    - name: Check if approval status file exists
+      stat:
+        path: "{{ approval_file }}"
+      register: approval_file_stat
+
+    - name: Fail if approval file doesn't exist
+      fail:
+        msg: "Approval status file not found: {{ approval_file }}"
+      when: not approval_file_stat.stat.exists
+
+    - name: Read approval status
+      slurp:
+        src: "{{ approval_file }}"
+      register: approval_data
+
+    - name: Parse approval data
+      set_fact:
+        approval_info: "{{ approval_data.content | b64decode | from_json }}"
+
+    - name: Validate approval status
+      fail:
+        msg: "Approval status is not 'approved'. Current status: {{ approval_info.status }}"
+      when: approval_info.status != "approved"
+
+    - name: Display approval info
+      debug:
+        msg: |
+          ✅ **Approval Confirmed**
+          **Approval ID**: {{ approval_info.approval_id }}
+          **Current Size**: {{ approval_info.current_size }}GB
+          **New Size**: {{ approval_info.new_size }}GB
+          **Increment**: {{ approval_info.increment }}GB
+
+    - name: Read current MongoDB volume size from Terraform
+      slurp:
+        src: "{{ json_file }}"
+      register: terraform_mongodb_size
+
+    - name: Parse Terraform MongoDB size
+      set_fact:
+        current_terraform_size: "{{ terraform_mongodb_size.content | b64decode | from_json }}"
+
+    - name: Validate Terraform size data
+      fail:
+        msg: "Failed to read MongoDB volume size from Terraform file. Expected 'mongodb_volume_size' field."
+      when: current_terraform_size.mongodb_volume_size is not defined
+
+    - name: Check if JSON file exists
+      stat:
+        path: "{{ json_file }}"
+      register: json_file_stat
+
+    - name: Fail if JSON file doesn't exist
+      fail:
+        msg: "MongoDB size configuration file not found: {{ json_file }}"
+      when: not json_file_stat.stat.exists
+
+    - name: Update JSON file with new volume size
+      copy:
+        content: |
+          {
+            "mongodb_volume_size": {{ approval_info.new_size }}
+          }
+        dest: "{{ json_file }}"
+        mode: "0644"
+      register: json_update_result
+
+    - name: Verify JSON file update
+      debug:
+        msg: "JSON file updated successfully: {{ json_update_result.changed }}"
+
+    - name: Check if Terraform is initialized
+      stat:
+        path: "{{ terraform_dir }}/.terraform"
+      register: terraform_init_check
+
+    - name: Run Terraform init (if needed)
+      command: terraform init
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: terraform_init_result
+      failed_when: false
+      changed_when: false
+      when: not terraform_init_check.stat.exists
+
+    - name: Get automation host IP address for Terraform
+      command: hostname -I
+      register: private_ip_result
+      changed_when: false
+
+    - name: Set my_ip CIDR for Terraform
+      set_fact:
+        terraform_my_ip: "{{ (private_ip_result.stdout | default('10.0.2.101')) | trim | split(' ') | first }}/32"
+
+    - name: Display IP address being used
+      debug:
+        msg: "Using IP address for my_ip variable: {{ terraform_my_ip }}"
+
+    - name: Run Terraform plan for EBS volume only
+      command: terraform plan -var-file="mongodb_size.auto.tfvars.json" -var="my_ip={{ terraform_my_ip }}" -target=module.compute.aws_ebs_volume.mongodb_data -out=tfplan
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: terraform_plan_result
+      failed_when: false
+
+    - name: Display Terraform plan result
+      debug:
+        msg: "{{ terraform_plan_result.stdout_lines }}"
+
+    - name: Check if plan shows EBS volume changes
+      fail:
+        msg: "Terraform plan shows no changes to EBS volume. Volume size may already be at the target size."
+      when:
+        - terraform_plan_result.rc == 0
+        - "'No changes' in terraform_plan_result.stdout"
+
+    - name: Display Terraform plan complete message
+      debug:
+        msg: |
+          📋 **Terraform Plan Complete - Ready to Apply EBS Volume**
+
+          **Action**: MongoDB Volume Expansion
+          **Approval ID**: {{ approval_info.approval_id }}
+          **Status**: 🚀 Starting Terraform apply (EBS volume only)...
+          **Timestamp**: {{ mattermost_timestamp }}
+
+    - name: Run Terraform apply for EBS volume only
+      command: terraform apply -auto-approve -var-file="mongodb_size.auto.tfvars.json" -var="my_ip={{ terraform_my_ip }}" -target=module.compute.aws_ebs_volume.mongodb_data
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: terraform_apply_result
+
+    - name: Check Terraform apply success
+      fail:
+        msg: "Terraform apply failed with exit code {{ terraform_apply_result.rc }}"
+      when: terraform_apply_result.rc != 0
+
+    - name: Resolve MongoDB EBS volume ID by tag
+      command: >-
+        aws ec2 describe-volumes
+        --region {{ aws_region }}
+        --filters Name=tag:Name,Values={{ ebs_volume_name_tag }}
+        --query 'Volumes[0].VolumeId' --output text
+      register: mongodb_volume_id
+      changed_when: false
+      failed_when: mongodb_volume_id.rc != 0 or (mongodb_volume_id.stdout | trim) == ''
+
+    - name: Wait for EBS modification to reach target size
+      command: >-
+        aws ec2 describe-volumes --region {{ aws_region }} --volume-ids {{ mongodb_volume_id.stdout | trim }}
+        --query 'Volumes[0].Size' --output text
+      register: current_size_query
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: (current_size_query.stdout | int) > (current_terraform_size.mongodb_volume_size | default(20) | int)
+
+    - name: Display EBS modification completion
+      debug:
+        msg: |
+          ✅ **EBS Volume Modification Completed**
+
+          **Action**: MongoDB Volume Expansion (EBS Volume Only)
+          **Approval ID**: {{ approval_info.approval_id }}
+          **Status**: 🎉 Terraform apply completed successfully
+          **Current Volume Size**: {{ current_size_query.stdout }}GB
+          **Timestamp**: {{ mattermost_timestamp }}
+
+    - name: Update approval status to completed
+      copy:
+        content: |
+          {
+            "approval_id": "{{ approval_info.approval_id }}",
+            "timestamp": "{{ mattermost_timestamp }}",
+            "status": "completed",
+            "approved_at": "{{ approval_info.approved_at | default('') }}",
+            "approved_by": "{{ approval_info.approved_by | default('') }}",
+            "completed_at": "{{ mattermost_timestamp }}",
+            "current_size": {{ approval_info.current_size }},
+            "new_size": {{ approval_info.new_size }},
+            "increment": {{ approval_info.increment }},
+            "ebs_modification_state": "completed",
+            "terraform_result": "success"
+          }
+        dest: "{{ approval_file }}"
+        mode: "0644"
+
+    - name: Display success message
+      debug:
+        msg: |
+          ✅ **Auto-Remediation Completed Successfully**
+
+          **Action**: MongoDB Volume Expansion
+          **Approval ID**: {{ approval_info.approval_id }}
+          **Previous Size**: {{ approval_info.current_size }}GB
+          **New Size**: {{ approval_info.new_size }}GB
+          **Increment**: +{{ approval_info.increment }}GB
+
+          **Status**: ✅ Terraform apply completed successfully
+          **Timestamp**: {{ mattermost_timestamp }}
+
+          **Next Steps**: 
+          - Monitor volume expansion progress
+          - Verify new volume is attached
+          - Check application health
+
+    - name: Display completion message
+      debug:
+        msg: |
+          🎉 Auto-remediation completed successfully!
+
+          Summary:
+          - MongoDB EBS volume size increased from {{ approval_info.current_size }}GB to {{ approval_info.new_size }}GB
+          - Terraform apply completed successfully (EBS volume only)
+          - EBS modification completed successfully
+          - Ready for filesystem extension
+
+          The MongoDB EBS volume has been expanded to {{ approval_info.new_size }}GB.
+          Filesystem extension will be handled by the extend-backend playbook.

@@ -1,0 +1,39 @@
+FROM grafana/grafana-oss:latest
+
+# Switch to root to install packages
+USER root
+
+# Copy the grafana provisioning configuration
+COPY grafana/provisioning/ /etc/grafana/provisioning/
+
+# Copy the dashboard files directly
+COPY grafana/dashboards/ /etc/grafana/provisioning/dashboards/
+
+# Set correct permissions
+RUN chown -R 472:472 /etc/grafana/provisioning/dashboards && \
+  chmod -R 644 /etc/grafana/provisioning/dashboards/*.json
+
+# Create data directory with permissions for UID 1000 (Ubuntu user)
+RUN mkdir -p /var/lib/grafana && \
+  chown -R 1000:1000 /var/lib/grafana && \
+  chmod -R 755 /var/lib/grafana
+
+# Create additional required directories
+RUN mkdir -p /var/lib/grafana/plugins && \
+  chown -R 1000:1000 /var/lib/grafana/plugins && \
+  chmod -R 755 /var/lib/grafana/plugins
+
+# Set environment variables for dashboard provisioning
+ENV GF_SECURITY_ADMIN_PASSWORD=admin
+ENV GF_SECURITY_ADMIN_USER=admin
+ENV GF_DASHBOARDS_MIN_REFRESH_INTERVAL=1s
+
+# Switch back to grafana user
+USER grafana
+
+# Expose port 3000
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/api/health || exit 1 

@@ -68,9 +68,8 @@ User ──► Route53 ──► Elastic IP ──► Frontend EC2 (public subne
 
 ### ⚙️ Configuration Management (Ansible)
 
-- **Automated system configuration** and hardening
+- **Automated system configuration** 
 - **Application deployment** with Docker Compose
-- **Monitoring stack** setup with embedded configurations
 - **Security hardening** and SSH key management
 - **Health checks** and validation
 - **Streamlined deployment** approach
